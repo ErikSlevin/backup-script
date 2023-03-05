@@ -238,7 +238,7 @@ function Move-BackupFiles {
     Param (
         [Parameter(Mandatory = $true)]
         [string]$BackupName,
-        [string]$SearchPattern = "",
+        [string]$SearchPattern,
         [string]$SearchFolder = "$env:USERPROFILE\Downloads",
         [string]$TargetFolder = "$env:USERPROFILE\Downloads",
         [switch]$Copy,
@@ -248,7 +248,7 @@ function Move-BackupFiles {
     )
 
     # Durchsuche das Quellverzeichnis nach passenden Dateien
-    $items = Get-ChildItem -Path $SearchFolder -Recurse:$Recurse
+    $items = Get-ChildItem -Path $SearchFolder -File | Where-Object { $_.Name -match $SearchPattern }
 
     # Wenn mindestens eine passende Datei oder ein passendes Verzeichnis gefunden wurde
     if ($items) {
@@ -267,16 +267,26 @@ function Move-BackupFiles {
                 $destinationDirectory = Join-Path $TargetFolder\$BackupName $relativePath
                 New-Item -ItemType Directory -Path $destinationDirectory | Out-Null
 
+                # Kopiere/verschiebe den gesamten Inhalt des Verzeichnisses, wenn die -Recurse-Option angegeben wurde
+                if ($Recurse) {
+                    $destinationSubdirectory = Join-Path $TargetFolder\$BackupName $relativePath.Substring(1)
+                    Copy-Item $item.FullName\* $destinationSubdirectory -Recurse -Force
+                }
+
             } else {
                 # Wenn es sich um eine Datei handelt, kopiere/verschiebe sie ins Zielverzeichnis und benenne sie um
                 $newName = $item.Name
 
                 if (!$NoRename) {
-                    $newName = '{0}-{1}-{3}-Backup.{2}' -f $date, $BackupName, $item.NameString ,$item.Extension.TrimStart('.')
+                    if ($item.Extension -eq '.gz' -and $item.Name.Contains('.tar')) {
+                        $newName = '{0}-{1}-Backup.tar.gz' -f $date, $BackupName
+                    } else {
+                        $newName = '{0}-{1}-Backup{2}' -f $date, $BackupName, $item.Extension
+                    }
                 }
 
-                $destinationFile = Join-Path $TargetFolder\$BackupName $relativePath.Replace($item.Name, $newName)
-                
+                $destinationFile = Join-Path $TargetFolder\$BackupName $newName
+
                 if ($Copy) {
                     Copy-Item $item.FullName $destinationFile
                 } elseif ($Move) {
@@ -335,7 +345,7 @@ function Copy-RemoteData {
     Die Funktion "Copy-RemoteData" verwendet den SCP-Befehl zum Kopieren von Daten von einem Remote-Server auf einen
     lokalen Computer. Um diese Funktion ausführen zu können, muss der SCP-Befehl auf dem lokalen Computer verfügbar sein.
     #>
-    
+
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true, Position=0)]
@@ -377,42 +387,43 @@ $global:BackupFolders = @()
 # ======================================
 #           Draytek Backup
 # ======================================
-Move-BackupFiles -BackupName "Draytek" -SearchPattern '.*modem.*\.cfg$'
+Move-BackupFiles -BackupName "Draytek" -SearchPattern '^V165_\d{8}_Modem_424_STD\.cfg$'
 
 # ======================================
 #               Bitwarden
 # ======================================
-Move-BackupFiles -BackupName "Bitwarden" -SearchPattern '.*bitwarden.*\.json$'
+Move-BackupFiles -BackupName "Bitwarden" -SearchPattern 'bitwarden_export_(\d{14}).json'
 
 # ======================================
 #              Portainer                
 # ======================================
-Move-BackupFiles -BackupName "Portainer" -SearchPattern '.*portainer-backup.*\.tar.gz$'
+Move-BackupFiles -BackupName "Portainer" -SearchPattern 'portainer-backup_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.tar\.gz'
 
 # ======================================
 #                 Unifi
 # ======================================
-Move-BackupFiles -BackupName "Unifi" -SearchPattern '.*.(unf|unifi)$'
+Move-BackupFiles -BackupName "Unifi" -SearchPattern '^.*(unifi|network).*(\.unf|\.unifi)$'
 
 # ======================================
 #                 Heimdal
 # ======================================
-Move-BackupFiles -BackupName "Heimdal" -SearchPattern '.*heimdallexport.*\.json$'
+Move-BackupFiles -BackupName "Heimdal" -SearchPattern 'heimdallexport.json'
 
 # ======================================
 #               Diskstation
 # ======================================
-Move-BackupFiles -BackupName "Diskstation" -SearchPattern '.*diskstation.*\.dss$'
-
-# ======================================
-#                 PiHole
-# ======================================
-Copy-RemoteData -serverName "Docker-Pi-1" -remotePath "/home/erik/backup/*-pihole-backup.tar.gz" -name "PiHole"
+Move-BackupFiles -BackupName "Diskstation" -SearchPattern 'Diskstation_[0-9]{8}\.dss'
 
 # ======================================
 #                GitHub
 # ======================================
-Move-BackupFiles -BackupName "GitHub" -SearchFolder $env:USERPROFILE\Documents\GitHub\ -Copy -Recurse -NoRename
+Move-BackupFiles -BackupName "GitHub" -SearchFolder $env:USERPROFILE\Documents\GitHub -Copy -Recurse -NoRename
+
+
+# ======================================
+#                   SSH
+# ======================================
+Move-BackupFiles -BackupName "SSH" -SearchFolder $env:USERPROFILE\.ssh -Copy -Recurse -NoRename
 
 # ======================================
 #                  CURA
@@ -421,9 +432,24 @@ Move-BackupFiles -BackupName "GitHub" -SearchFolder $env:USERPROFILE\Documents\G
 $SearchFolder = Get-ChildItem $env:APPDATA\cura\ -Directory | Sort-Object @{ Expression = { [regex]::Replace($_.Name, '.*(\d+(\.\d+)*)$', '$1') } } -Descending
 $SelectedFolder = $SearchFolder | Select-Object -First 1
 $SearchFolder = Join-Path $SelectedFolder.FullName "quality_changes"
-Move-BackupFiles -BackupName "Cura" -SearchPattern '.*\.(txt|cfg)$' -SearchFolder $SearchFolder -Mode "Copy"
+$filePath = Join-Path $SearchFolder "WICHTIG - LESEN!.txt"
+Set-Content -Path $filePath  -Value "Backup aus $SearchFolder"
+Move-BackupFiles -BackupName "Cura" -SearchPattern '.*\.(txt|cfg)$' -SearchFolder $SearchFolder -Copy -NoRename
+
+# ======================================
+#                 PiHole
+# ======================================
+Copy-RemoteData -serverName "Docker-Pi-1" -remotePath "/home/erik/backup/*-pihole-backup.tar.gz" -name "PiHole"
+
+# ======================================
+#              Homeassistant
+# ======================================
+Copy-RemoteData -serverName "Homeassistant" -remotePath "/backup/*.tar" -name "Homeassitant"
 
 
-foreach ($Folder in $BackupFolders) {
-    Backup-Folder -SourceFolder $Folder.Path -BackupName $Folder.BackupName -Password $Password
+
+foreach ($Folder in ($BackupFolders | Sort-Object -Unique -Property BackupName)) {
+    if (Backup-Folder -SourceFolder $Folder.Path -BackupName $Folder.BackupName -Password $Password) {
+        Remove-Item $Folder.Path -Recurse -Force
+    }
 }
